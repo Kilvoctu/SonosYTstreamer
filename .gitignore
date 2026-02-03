@@ -1,0 +1,9 @@
+# Project stuff
+ffmpeg/
+
+# Other stuff
+.env
+.venv/
+venv/
+__pycache__
+.idea

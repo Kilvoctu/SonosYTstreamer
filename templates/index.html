@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>SonosYTstreamer Web UI</title>
+</head>
+<body>
+    <h1>SonosYTstreamer Web UI</h1>
+
+    <label>YouTube URL(s):</label>
+    <input type="text" id="youtube_url" size="50" placeholder="Comma-separated URLs or a playlist"><br><br>
+
+    <button onclick="play()">Queue</button>
+    <button onclick="stop()">Skip</button><br><br>
+
+    <label>Volume: </label>
+    <input type="range" id="volume" min="0" max="100" value="20" oninput="setVolume(this.value)">
+    <span id="vol_val">20</span><br><br>
+
+    <p>Status: <span id="status">idle</span></p>
+    <p>Now Playing: <span id="current_title">{{ current_title }}</span></p>
+
+    <h3>Queue:</h3>
+    <ul id="queue_list" style="width: 400px; list-style-type: none; padding: 0;">
+        {% for item in queue_list %}
+            <li>{{ item['title'] }} <button onclick="removeFromQueue({{ loop.index0 }})">X</button></li>
+        {% endfor %}
+    </ul>
+
+<script>
+function play() {
+    fetch('/play', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({url: document.getElementById('youtube_url').value})
+    });
+}
+function stop() {
+    fetch('/stop', {method:'POST'});
+}
+function setVolume(val) {
+    document.getElementById('vol_val').innerText = val;
+    fetch('/volume', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({volume: val})
+    });
+}
+function removeFromQueue(idx) {
+    fetch('/remove_from_queue', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({index: idx})
+    });
+}
+
+// SSE for live status and queue using JSON
+const statusEl = document.getElementById('status');
+const currentEl = document.getElementById('current_title');
+const queueEl = document.getElementById('queue_list');
+
+const evtSource = new EventSource('/status_stream');
+evtSource.onmessage = function(event) {
+    try {
+        const msg = JSON.parse(event.data);
+
+        statusEl.innerText = msg.state;
+        currentEl.innerText = msg.current;
+
+        // update queue list with remove buttons
+        queueEl.innerHTML = '';
+        msg.queue.forEach((title, idx) => {
+            const li = document.createElement('li');
+            li.innerHTML = `${title} <button onclick="removeFromQueue(${idx})">X</button>`;
+            queueEl.appendChild(li);
+        });
+    } catch (e) {
+        console.error("Failed to parse SSE JSON:", e);
+    }
+};
+</script>
+</body>
+</html>
