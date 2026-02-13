@@ -3,6 +3,8 @@ Simple tool to stream YouTube videos to Sonos speakers
 
 <img src="preview.jpg" alt="Preview" width="450">
 
+I made this tool because I was previously using SonosTube for Android, and it's very unreliable (probably not their fault), and didn't seem like there were any other alternatives. 
+
 ### Setup
 - Create an .env file in root directory with these parameters:
 
