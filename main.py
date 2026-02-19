@@ -136,7 +136,7 @@ def queue_runner():
         }
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
+            info = ydl.extract_info(yt_url, download=False)
             audio_url = info['url']
 
         coordinator.volume = 20
@@ -204,7 +204,7 @@ def play():
         try:
             ydl_opts_video = {'format': 'bestaudio', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
             with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
-                info = ydl.extract_info(url, download=False)
+                info = ydl.extract_info(yt_url, download=False)
                 title = info.get('title', 'Unknown Title')
             play_queue.put((yt_url, title))
             print(f"Added url: {title}")
