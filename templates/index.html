@@ -70,7 +70,10 @@ evtSource.onmessage = function(event) {
     try {
         const msg = JSON.parse(event.data);
 
-        if (msg.state === 'streaming' && msg.duration > 0) {
+        // Display LIVE or time progress
+        if (msg.is_live) {
+            statusEl.innerText = "LIVE";
+        } else if (msg.state === 'streaming' && msg.duration > 0) {
             statusEl.innerText = `${formatTime(msg.position)} / ${formatTime(msg.duration)}`;
         } else {
             statusEl.innerText = msg.state;
@@ -78,11 +81,12 @@ evtSource.onmessage = function(event) {
         
         currentEl.innerText = msg.current;
 
-        // update queue list with remove buttons
+        // update queue list with LIVE labels and remove buttons
         queueEl.innerHTML = '';
         msg.queue.forEach((title, idx) => {
             const li = document.createElement('li');
-            li.innerHTML = `${title} <button onclick="removeFromQueue(${idx})">X</button>`;
+            const isLive = msg.queue_is_live && msg.queue_is_live[idx];
+            li.innerHTML = `${isLive ? '[LIVE] ' : ''}${title} <button onclick="removeFromQueue(${idx})">X</button>`;
             queueEl.appendChild(li);
         });
     } catch (e) {

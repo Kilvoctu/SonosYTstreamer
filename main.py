@@ -32,6 +32,7 @@ play_queue = Queue()
 current_title = ""
 current_duration = 0
 current_position = 0
+is_live_stream = False
 
 # Logging cleanup
 log = logging.getLogger('werkzeug')
@@ -123,24 +124,30 @@ speaker = SoCo(sonos_ip)
 coordinator = speaker.group.coordinator
 
 def queue_runner():
-    global audio_url, stream_state, current_title, ffmpeg_process, current_duration, current_position
+    global audio_url, stream_state, current_title, ffmpeg_process, current_duration, current_position, is_live_stream
     while True:
-        yt_url, title = play_queue.get()
+        # Get queue item - supports (url, title) or (url, title, is_live)
+        item = play_queue.get()
+        if len(item) == 3:
+            yt_url, title, is_live_stream = item
+        else:
+            yt_url, title = item
+            is_live_stream = False
 
         current_title = title
         stream_state = "buffering"
 
-        ydl_opts = {
-            'format': 'bestaudio',
-            'quiet': True,
-            'no_warnings': True,
-            'noplaylist': True
-        }
+        if is_live_stream:
+            ydl_opts = {'format': 'best', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
+        else:
+            ydl_opts = {'format': 'bestaudio', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(yt_url, download=False)
             audio_url = info['url']
-            current_duration = info.get('duration', 0)
+            is_live = info.get('is_live', False)
+            is_live_stream = is_live or is_live_stream
+            current_duration = info.get('duration', 0) if not is_live_stream else 0
 
         coordinator.volume = 20
         coordinator.play_uri(f'{url_scheme}://{local_ip}:{stream_port}/stream.mp3')
@@ -159,9 +166,10 @@ def queue_runner():
             time.sleep(0.2)
 
         while coordinator.get_current_transport_info()['current_transport_state'] == 'PLAYING':
-            current_position = time.time() - play_start_time
-            if current_position > current_duration:
-                current_position = current_duration
+            if not is_live_stream:
+                current_position = time.time() - play_start_time
+                if current_position > current_duration:
+                    current_position = current_duration
             time.sleep(1)
 
         stream_state = "idle"
@@ -169,6 +177,7 @@ def queue_runner():
         current_title = ""
         current_duration = 0
         current_position = 0
+        is_live_stream = False
 
 
 Thread(target=queue_runner, daemon=True).start()
@@ -212,12 +221,22 @@ def play():
 
     for yt_url in urls_to_enqueue:
         try:
-            ydl_opts_video = {'format': 'bestaudio', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
-            with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
+            ydl_opts_check = {'quiet': True, 'no_warnings': True, 'noplaylist': True}
+            with yt_dlp.YoutubeDL(ydl_opts_check) as ydl:
                 info = ydl.extract_info(yt_url, download=False)
                 title = info.get('title', 'Unknown Title')
-            play_queue.put((yt_url, title))
-            print(f"Added url: {title}")
+                is_live = info.get('is_live', False)
+            
+            if is_live:
+                ydl_opts_video = {'format': 'best', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
+            else:
+                ydl_opts_video = {'format': 'bestaudio', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
+            
+            with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
+                info = ydl.extract_info(yt_url, download=False)
+            
+            play_queue.put((yt_url, title, is_live))
+            print(f"Added url: {title} {'[LIVE]' if is_live else ''}")
         except yt_dlp.utils.DownloadError as e:
             print(f"Skipping video due to error: {yt_url}")
             print(f"  Error: {e}")
@@ -252,15 +271,24 @@ def status_stream():
         last_state = ""
         last_title = ""
         last_queue = ""
-        global stream_state, current_title, current_duration, current_position
+        last_is_live = False
+        global stream_state, current_title, current_duration, current_position, is_live_stream
         while True:
-            # Build queue titles as a list of strings assuming each item is (url, title)
-            queue_titles = [t[1] for t in list(play_queue.queue)]
+            queue_data = []
+            for t in list(play_queue.queue):
+                if len(t) >= 3:
+                    queue_data.append({'title': t[1], 'is_live': t[2]})
+                else:
+                    queue_data.append({'title': t[1], 'is_live': False})
+            
+            queue_titles = [q['title'] for q in queue_data]
+            queue_is_live = [q['is_live'] for q in queue_data]
             queue_str = ";;".join(queue_titles)
 
             if (stream_state != last_state or
                 current_title != last_title or
                 queue_str != last_queue or
+                is_live_stream != last_is_live or
                 int(current_duration) != int(last_duration) if 'last_duration' in globals() else True or
                 int(current_position) != int(last_position) if 'last_position' in globals() else True):
 
@@ -269,13 +297,16 @@ def status_stream():
                 last_queue = queue_str
                 last_duration = current_duration
                 last_position = current_position
+                last_is_live = is_live_stream
 
                 data = json.dumps({
                     'state': stream_state,
                     'current': current_title,
                     'queue': queue_titles,
+                    'queue_is_live': queue_is_live,
                     'duration': current_duration,
-                    'position': current_position
+                    'position': current_position,
+                    'is_live': is_live_stream
                 })
                 yield f"data: {data}\n\n"
 
