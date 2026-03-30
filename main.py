@@ -30,6 +30,8 @@ audio_url = None
 stream_state = "idle"  # idle / buffering / streaming
 play_queue = Queue()
 current_title = ""
+current_duration = 0
+current_position = 0
 
 # Logging cleanup
 log = logging.getLogger('werkzeug')
@@ -121,7 +123,7 @@ speaker = SoCo(sonos_ip)
 coordinator = speaker.group.coordinator
 
 def queue_runner():
-    global audio_url, stream_state, current_title, ffmpeg_process
+    global audio_url, stream_state, current_title, ffmpeg_process, current_duration, current_position
     while True:
         yt_url, title = play_queue.get()
 
@@ -138,27 +140,35 @@ def queue_runner():
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(yt_url, download=False)
             audio_url = info['url']
+            current_duration = info.get('duration', 0)
 
         coordinator.volume = 20
         coordinator.play_uri(f'{url_scheme}://{local_ip}:{stream_port}/stream.mp3')
 
-        start_time = time.time()
+        buffer_start_time = time.time()
         while True:
             state = coordinator.get_current_transport_info()['current_transport_state']
             if state == 'PLAYING':
                 stream_state = "streaming"
+                play_start_time = time.time()
+                current_position = 0
                 break
-            if time.time() - start_time > 10:
+            if time.time() - buffer_start_time > 10:
                 stream_state = "idle"
                 break
             time.sleep(0.2)
 
         while coordinator.get_current_transport_info()['current_transport_state'] == 'PLAYING':
+            current_position = time.time() - play_start_time
+            if current_position > current_duration:
+                current_position = current_duration
             time.sleep(1)
 
         stream_state = "idle"
         audio_url = None
         current_title = ""
+        current_duration = 0
+        current_position = 0
 
 
 Thread(target=queue_runner, daemon=True).start()
@@ -242,7 +252,7 @@ def status_stream():
         last_state = ""
         last_title = ""
         last_queue = ""
-        global stream_state, current_title
+        global stream_state, current_title, current_duration, current_position
         while True:
             # Build queue titles as a list of strings assuming each item is (url, title)
             queue_titles = [t[1] for t in list(play_queue.queue)]
@@ -250,16 +260,22 @@ def status_stream():
 
             if (stream_state != last_state or
                 current_title != last_title or
-                queue_str != last_queue):
+                queue_str != last_queue or
+                int(current_duration) != int(last_duration) if 'last_duration' in globals() else True or
+                int(current_position) != int(last_position) if 'last_position' in globals() else True):
 
                 last_state = stream_state
                 last_title = current_title
                 last_queue = queue_str
+                last_duration = current_duration
+                last_position = current_position
 
                 data = json.dumps({
                     'state': stream_state,
                     'current': current_title,
-                    'queue': queue_titles
+                    'queue': queue_titles,
+                    'duration': current_duration,
+                    'position': current_position
                 })
                 yield f"data: {data}\n\n"
 

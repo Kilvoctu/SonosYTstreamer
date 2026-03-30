@@ -25,12 +25,12 @@ WEB_PORT=the web UI port (ex. 8001)
 ### Features
 - Supports multiple speakers (one speaker is designated as the coordinator)
 - Volume changing
+- Shows current and total time in video
 - Skip to go to next track in queue.
 - Can remove tracks in queue.
 
 ### Known issues and other things
 - Doesn't support live streams.
-- Doesn't show video length or current position (may add this later). 
 - No retry if a link doesn't queue properly (it will just drop).
 - Can't reorder queue.
 - Probably a bunch of bugs I haven't caught.

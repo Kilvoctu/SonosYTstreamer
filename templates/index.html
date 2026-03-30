@@ -53,6 +53,13 @@ function removeFromQueue(idx) {
     });
 }
 
+// Format seconds as MM:SS
+function formatTime(seconds) {
+    const mins = Math.floor(seconds / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+}
+
 // SSE for live status and queue using JSON
 const statusEl = document.getElementById('status');
 const currentEl = document.getElementById('current_title');
@@ -63,7 +70,12 @@ evtSource.onmessage = function(event) {
     try {
         const msg = JSON.parse(event.data);
 
-        statusEl.innerText = msg.state;
+        if (msg.state === 'streaming' && msg.duration > 0) {
+            statusEl.innerText = `${formatTime(msg.position)} / ${formatTime(msg.duration)}`;
+        } else {
+            statusEl.innerText = msg.state;
+        }
+        
         currentEl.innerText = msg.current;
 
         // update queue list with remove buttons
