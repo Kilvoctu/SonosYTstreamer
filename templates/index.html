@@ -70,8 +70,9 @@ evtSource.onmessage = function(event) {
     try {
         const msg = JSON.parse(event.data);
 
-        // Display LIVE or time progress
-        if (msg.is_live) {
+        if (msg.is_fetching) {
+            statusEl.innerText = "Fetching";
+        } else if (msg.is_live) {
             statusEl.innerText = "LIVE";
         } else if (msg.state === 'streaming' && msg.duration > 0) {
             statusEl.innerText = `${formatTime(msg.position)} / ${formatTime(msg.duration)}`;

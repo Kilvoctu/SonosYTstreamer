@@ -33,6 +33,7 @@ current_title = ""
 current_duration = 0
 current_position = 0
 is_live_stream = False
+is_fetching = False
 
 # Logging cleanup
 log = logging.getLogger('werkzeug')
@@ -104,7 +105,7 @@ class StreamHandler(BaseHTTPRequestHandler):
                 if not chunk:
                     break
                 self.wfile.write(chunk)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
             pass
         finally:
             if ffmpeg_process:
@@ -137,24 +138,23 @@ def queue_runner():
         current_title = title
         stream_state = "buffering"
 
-        if is_live_stream:
-            ydl_opts = {'format': 'best', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
-        else:
-            ydl_opts = {'format': 'bestaudio', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
+        ydl_opts = {'format': 'bestaudio/best', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
 
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(yt_url, download=False)
             audio_url = info['url']
-            is_live = info.get('is_live', False)
+            is_live = dict(info).get('is_live', False)  # type: ignore[arg-type]
             is_live_stream = is_live or is_live_stream
-            current_duration = info.get('duration', 0) if not is_live_stream else 0
+            current_duration = dict(info).get('duration', 0) if not is_live_stream else 0
 
         coordinator.volume = 20
         coordinator.play_uri(f'{url_scheme}://{local_ip}:{stream_port}/stream.mp3')
 
         buffer_start_time = time.time()
-        while True:
+        while stream_state != "idle":
             state = coordinator.get_current_transport_info()['current_transport_state']
+            if stream_state == "idle":
+                break
             if state == 'PLAYING':
                 stream_state = "streaming"
                 play_start_time = time.time()
@@ -163,21 +163,37 @@ def queue_runner():
             if time.time() - buffer_start_time > 10:
                 stream_state = "idle"
                 break
-            time.sleep(0.2)
+            time.sleep(0.1)
 
-        while coordinator.get_current_transport_info()['current_transport_state'] == 'PLAYING':
+        while stream_state != "idle":
+            state = coordinator.get_current_transport_info()['current_transport_state']
+            if stream_state == "idle":
+                break
+            if state != 'PLAYING':
+                break
             if not is_live_stream:
                 current_position = time.time() - play_start_time
                 if current_position > current_duration:
                     current_position = current_duration
-            time.sleep(1)
+            time.sleep(0.5)
 
-        stream_state = "idle"
+        queue_size = play_queue.qsize()
+        print(f"Playback ended. Stream state: {stream_state}, Queue size: {queue_size}")
+        
         audio_url = None
         current_title = ""
         current_duration = 0
         current_position = 0
         is_live_stream = False
+
+        if stream_state == "idle":
+            if queue_size > 0:
+                print("More items in queue, continuing...")
+                stream_state = "buffering"
+            else:
+                print("Queue empty, going to wait state")
+                stream_state = "idle"
+                continue
 
 
 Thread(target=queue_runner, daemon=True).start()
@@ -190,12 +206,13 @@ def index():
 
 @app.route('/play', methods=['POST'])
 def play():
-    global stream_state
+    global stream_state, is_fetching
     data = request.get_json()
     urls_str = data.get('url')
     if not urls_str:
         return jsonify({'status': 'error', 'msg': 'No URL provided'}), 400
 
+    is_fetching = True
     urls_str = urls_str.strip()
     urls_to_enqueue = []
 
@@ -210,6 +227,7 @@ def play():
         try:
             info = ydl.extract_info(urls_str, download=False)
         except yt_dlp.utils.DownloadError:
+            is_fetching = False
             return jsonify({'status': 'error', 'msg': 'Failed to extract URL/playlist'}), 400
 
         if 'entries' in info:  # playlist
@@ -221,41 +239,44 @@ def play():
 
     for yt_url in urls_to_enqueue:
         try:
-            ydl_opts_check = {'quiet': True, 'no_warnings': True, 'noplaylist': True}
-            with yt_dlp.YoutubeDL(ydl_opts_check) as ydl:
+            ydl_opts_video = {
+                'format': 'bestaudio/best',
+                'quiet': True,
+                'no_warnings': True,
+                'noplaylist': True
+            }
+            with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
                 info = ydl.extract_info(yt_url, download=False)
                 title = info.get('title', 'Unknown Title')
                 is_live = info.get('is_live', False)
             
-            if is_live:
-                ydl_opts_video = {'format': 'best', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
-            else:
-                ydl_opts_video = {'format': 'bestaudio', 'quiet': True, 'no_warnings': True, 'noplaylist': True}
-            
-            with yt_dlp.YoutubeDL(ydl_opts_video) as ydl:
-                info = ydl.extract_info(yt_url, download=False)
-            
             play_queue.put((yt_url, title, is_live))
             print(f"Added url: {title} {'[LIVE]' if is_live else ''}")
-        except yt_dlp.utils.DownloadError as e:
-            print(f"Skipping video due to error: {yt_url}")
-            print(f"  Error: {e}")
-            continue
         except Exception as e:
             print(f"Unexpected error with video {yt_url}: {e}")
             continue
 
+    is_fetching = False
     return jsonify({'status': 'ok'})
 
 @app.route('/stop', methods=['POST'])
 def stop():
-    global ffmpeg_process, stream_state, current_title
+    global ffmpeg_process, stream_state, current_title, is_live_stream, current_duration, current_position
+    stream_state = "idle"
+    current_title = ""
+    is_live_stream = False
+    current_duration = 0
+    current_position = 0
+    
+    try:
+        coordinator.stop()
+    except (Exception,):
+        pass
+    
     if ffmpeg_process:
         ffmpeg_process.kill()
         ffmpeg_process = None
-    coordinator.stop()
-    stream_state = "idle"
-    current_title = ""
+    
     return jsonify({'status': 'ok'})
 
 @app.route('/volume', methods=['POST'])
@@ -271,8 +292,12 @@ def status_stream():
         last_state = ""
         last_title = ""
         last_queue = ""
+        last_queue_is_live = []
         last_is_live = False
-        global stream_state, current_title, current_duration, current_position, is_live_stream
+        last_is_fetching = False
+        last_duration = 0
+        last_position = 0
+        global stream_state, current_title, current_duration, current_position, is_live_stream, is_fetching
         while True:
             queue_data = []
             for t in list(play_queue.queue):
@@ -284,20 +309,25 @@ def status_stream():
             queue_titles = [q['title'] for q in queue_data]
             queue_is_live = [q['is_live'] for q in queue_data]
             queue_str = ";;".join(queue_titles)
+            queue_is_live_str = ";;".join([str(x) for x in queue_is_live])
 
             if (stream_state != last_state or
                 current_title != last_title or
                 queue_str != last_queue or
+                queue_is_live_str != last_queue_is_live or
                 is_live_stream != last_is_live or
-                int(current_duration) != int(last_duration) if 'last_duration' in globals() else True or
-                int(current_position) != int(last_position) if 'last_position' in globals() else True):
+                is_fetching != last_is_fetching or
+                int(current_duration) != int(last_duration) or
+                int(current_position) != int(last_position)):
 
                 last_state = stream_state
                 last_title = current_title
                 last_queue = queue_str
+                last_queue_is_live = queue_is_live_str
                 last_duration = current_duration
                 last_position = current_position
                 last_is_live = is_live_stream
+                last_is_fetching = is_fetching
 
                 data = json.dumps({
                     'state': stream_state,
@@ -306,7 +336,8 @@ def status_stream():
                     'queue_is_live': queue_is_live,
                     'duration': current_duration,
                     'position': current_position,
-                    'is_live': is_live_stream
+                    'is_live': is_live_stream,
+                    'is_fetching': is_fetching
                 })
                 yield f"data: {data}\n\n"
 
@@ -320,14 +351,19 @@ def remove_from_queue():
     url_index = int(data.get('index', -1))
     global play_queue
 
-    if 0 <= url_index < play_queue.qsize():
-        with play_queue.mutex:
-            temp_list = list(play_queue.queue)
-            temp_list.pop(url_index)
+    try:
+        items = list(play_queue.queue)
+        
+        if 0 <= url_index < len(items):
+            items.pop(url_index)  # Remove the item at index
             play_queue.queue.clear()
-            for item in temp_list:
-                play_queue.queue.append(item)
-    return jsonify({'status': 'ok'})
+            play_queue.queue.extend(items)
+        else:
+            print(f"Index {url_index} invalid for {len(items)} items")
+        
+        return jsonify({'status': 'ok'})
+    except Exception as e:
+        return jsonify({'status': str(e)}), 500
 
 
 if __name__ == '__main__':

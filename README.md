@@ -32,6 +32,7 @@ WEB_PORT=the web UI port (ex. 8001)
 
 ### Known issues and other things
 - No retry if a link doesn't queue properly (it will just drop).
+- Can't go to specific time in video.
 - Can't reorder queue.
 - Probably a bunch of bugs I haven't caught.
 - Only tested on a pair of Sonos One.
